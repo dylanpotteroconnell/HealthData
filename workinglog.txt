@@ -1,0 +1,100 @@
+10/28/16:
+Exported my health data to two XML files. export_cda.xml (which contains general information about me), and export.xml (which contains all the relevant health data). We wish to parse export.xml into workable form in R.
+
+A quick google search reveals an R library, XML, which should help with this process. We first try the obvious approach
+
+library(XML)
+xmldoc <- xmlParse("export.xml")
+x <- xmlParse(xmldoc)
+
+And we run into the error 
+
+Error in as.vector(x, "character") : 
+  cannot coerce type 'externalptr' to vector of type 'character'
+
+Instead, we work with it as text.
+
+library(XML)
+xmldoc <- xmlParse("export.xml")
+xmldoc <- paste(readLines('export.xml'), '\n', collapse='')
+x <- xmlTreeParse(xmldoc, asText=TRUE)
+
+
+Now it is in the form of an XML data object in R. Next, we want to convert it to a data frame. Initially, we explore this xml object, x. It has two variables, doc (containing our data), and dtd, containing a variety of associated information. x$doc has three variables, name, file, and children (containing our data). We find the function xmlToList that converts our xml data object to a list, which we can work with directly. We still cannot view this list directly, due to some structural issues with the file formatting. With a quick google search, we find 
+
+x <- data[names(x) == 'Record']
+
+Ensures that all of our records follow the desired structure, by dropping all elements that without the name "record". We poke around in x some more, and we see that it is formed by columns of individual records. We wish to form a data frame using these, so we make an empty list (data), and iterate through each record in x, and add each column in x as a new row in data using rbind.
+
+options(stringsAsFactors=FALSE) # we want to leave our strings as strings.
+data <- list()
+for(rec in x){
+  data <- rbind(data,rec)
+}
+
+However, looking at data, we see an issue. This is conflating records of different forms, some of which are for distance travelled, and some for steps taken. Thus, we really want to make several different dataframes, each for a different sort of record. We first need to find all sorts of data records. We note that the "type" is the 1st column in our matrix "data", and thus
+
+unique(data[1])
+
+returns
+
+                                                type
+1                  HKQuantityTypeIdentifierStepCount
+7510  HKQuantityTypeIdentifierDistanceWalkingRunning
+15022         HKQuantityTypeIdentifierFlightsClimbed
+> 
+I wanted each of these records to be in a clearly labeled data frame, so this step may not be generally reproducible for health records containing a different set of types. However, it is easy enough to adapt to a different set of health records. We create three new lists, one for each of these record types. Now, we just go through each record and add it to the specified list. This is likely a clunky approach, but works for our purposes.
+
+stepCount <- list()
+distWalked <- list()
+flightsClimbed <- list()
+for(rec in x){
+  if(rec[1] == "HKQuantityTypeIdentifierStepCount"){
+    stepCount <- rbind(stepCount, rec)
+  }
+  if(rec[1] == "HKQuantityTypeIdentifierDistanceWalkingRunning"){
+    distWalked <- rbind(distWalked, rec)
+  }
+  if(rec[1] == "HKQuantityTypeIdentifierFlightsClimbed"){
+    flightsClimbed <- rbind(flightsClimbed, rec)
+  }
+}
+
+Next, we convert these lists to data frames. This gives us a warning that duplicate row names are lost, but I believe that is simply because they were all labeled “record” before, and we do not need to keep that information.
+
+stepCount <- data.frame(stepCount)
+distWalked <- data.frame(distWalked)
+flightsClimbed <- data.frame(flightsClimbed)
+
+Now, we can proceed to miscellaneous cleaning of these data frames. Most of this should be able to be done to all three, saving us some work. We remove “type” (as that is redundant within each dataframe), and change value to be numeric. The most important and difficult change is to the beginning and ending dates. Any analysis of our health data will be related to these timings, so we need to change them to workable format. It seems that POSIX is relatively standard, so I searched for how to make that conversion.
+ 
+
+I originally wrote this in for loops, which is what I am more used to. However, I was running into a variety of issues iterating through a list of data frames, so now follow the online advice of using lapply (I have also heard that for loops are quite inefficient in R, but I do not know the details).
+
+One major issue I ran into was that I spent a long time working with the variables in these data frames as lists. Once i realized this was not the normal behavior, I was able to fix it by updating the way I coerced the data into data frames, first converting all variables to characters.
+
+stepCount <- lapply(data.frame(stepCount),as.character)
+distWalked <- lapply(data.frame(distWalked),as.character)
+flightsClimbed <- lapply(data.frame(flightsClimbed),as.character)
+
+
+Was the final solution that worked. I will omit most of the details of me fooling around with many other approaches, as they are even more boring and pointless than the rest of this data cleaning log. In short, working with character variables makes the other transformations much easier.
+
+One final addition we made to our data was a midpoint in time between start and end. This is because the time chunks measured are generally just a few minutes. For the purposes of much of our analysis, we will be simply be adding up these chunks over longer periods, so a useful and quick approximation is to simply treat every record interval as being this midpoint in time.
+
+stepCount$midtime <- as.POSIXct((as.numeric(stepCount$startDate) + as.numeric(stepCount$endDate)) / 2, origin = '1970-01-01')
+
+To confirm that the time chunks are relatively small, we measure the total length of each record.
+
+stepCount$timerange <- difftime(stepCount$endDate,stepCount$startDate, units="min")
+
+By taking the range of this variable, we see this is never more than 10 minutes at a time. Thus, it can be useful to approximate this data as occuring at a single point, at least for now.
+
+
+
+
+
+
+
+
+
